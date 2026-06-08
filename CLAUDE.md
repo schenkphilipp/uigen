@@ -36,9 +36,21 @@ All scripts require `NODE_OPTIONS='--require ./node-compat.cjs'` (already config
 ### Key Abstractions
 
 - **VirtualFileSystem** (`lib/file-system.ts`): In-memory file tree with serialize/deserialize. All AI-generated code lives here — nothing is written to disk.
-- **ChatContext** (`lib/contexts/chat-context.tsx`): Wraps `useChat()` hook, manages message state, dispatches tool call results to FileSystemContext.
-- **FileSystemContext** (`lib/contexts/file-system-context.tsx`): Provides the virtual FS to all components; handles tool call processing.
-- **JSX Transformer** (`lib/transform/jsx-transformer.ts`): Babel standalone compilation + import map generation. Resolves `@/` aliases, creates blob URLs for local modules, proxies third-party packages through esm.sh.
+- **ChatContext** (`lib/contexts/chat-context.tsx`): Wraps `useChat()` hook, manages message state, dispatches tool call results to FileSystemContext. Must be nested inside `FileSystemProvider` (it calls `useFileSystem()` internally).
+- **FileSystemContext** (`lib/contexts/file-system-context.tsx`): Provides the virtual FS to all components; handles tool call processing. Exposes a `refreshTrigger` counter that increments on every FS mutation — `PreviewFrame` and other consumers watch it to know when to re-render.
+- **JSX Transformer** (`lib/transform/jsx-transformer.ts`): Babel standalone compilation + import map generation. Resolves `@/` aliases, creates blob URLs for local modules, proxies third-party packages through `esm.sh` (any non-relative, non-`@/` import is auto-mapped to `https://esm.sh/<package>`).
+
+### Dual Tool Execution
+
+Tool calls are executed **twice**: once server-side on a throw-away `VirtualFileSystem` in `route.ts` (so the AI gets accurate file contents back), and once client-side in `handleToolCall` (`file-system-context.tsx`) to keep the UI state in sync without a round-trip. If you add a new tool, both sides need to handle it.
+
+### Preview Entry Point Resolution
+
+`PreviewFrame` looks for an entry point in this order: `/App.jsx` → `/App.tsx` → `/index.jsx` → `/index.tsx` → `/src/App.jsx` → `/src/App.tsx` → first `.jsx`/`.tsx` file found. The AI generation prompt should default to `/App.jsx`.
+
+### Anonymous Work Recovery
+
+`lib/anon-work-tracker.ts` serialises anonymous user messages and file system state into `sessionStorage`. When the user signs up or signs in, `HeaderActions` reads this data and can offer to restore it into a new project.
 
 ### Auth
 
@@ -46,7 +58,7 @@ JWT tokens in HTTP-only cookies (7-day expiry) using `jose`. Middleware protects
 
 ### AI Provider
 
-Set `ANTHROPIC_API_KEY` in `.env` for real generation. Without it, a `MockLanguageModel` in `lib/provider.ts` produces hardcoded component responses for development.
+Set `ANTHROPIC_API_KEY` in `.env` for real generation. Without it, a `MockLanguageModel` in `lib/provider.ts` produces hardcoded component responses for development. Set `JWT_SECRET` in `.env` for production — without it, the fallback `"development-secret-key"` is used.
 
 ### Database
 
@@ -60,6 +72,11 @@ SQLite via Prisma. Schema in `prisma/schema.prisma`. Prisma client is generated 
 - **Prisma** (SQLite)
 - **Monaco Editor** for code editing
 - **Vitest** + Testing Library (jsdom environment)
+
+### Routes
+
+- `/` — anonymous users see the main editor; authenticated users are redirected to their most recent project (or a freshly created one)
+- `/[projectId]` — requires authentication; unauthenticated requests redirect to `/`
 
 ## Conventions
 
